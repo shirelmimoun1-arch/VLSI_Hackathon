@@ -1,99 +1,54 @@
 # 🚀 Smith-Waterman Hardware Accelerator on RISC-V
 
-A hardware/software co-design project developed during a RISC-V Hackathon to accelerate the **Smith-Waterman DNA sequence alignment algorithm**.
+A hardware/software co-design project developed during a RISC-V Hackathon to accelerate the **Smith-Waterman DNA sequence alignment algorithm** using software optimization and custom FPGA hardware.
 
 ## 🧬 The Challenge
 
-Smith-Waterman is a Dynamic Programming algorithm used for local DNA sequence alignment. While highly accurate, it performs **millions of repetitive computations** and memory accesses, making it computationally expensive.
+Smith-Waterman is a Dynamic Programming algorithm used for local DNA sequence alignment. Its DP computation requires repeatedly evaluating alignment states across many cells, resulting in significant computation and memory activity when processing multiple reference sequences.
 
-Our goal was simple:
+Our goal was:
 
-> **Make Smith-Waterman significantly faster by combining software optimizations with a custom FPGA hardware accelerator.**
+> **Accelerate Smith-Waterman by optimizing the software representation and offloading the computationally intensive alignment process to dedicated FPGA hardware.**
 
 ---
 
 ## 💡 Our Approach
 
-Instead of jumping straight into hardware, we followed a **measure → optimize → accelerate** workflow.
+We followed a **measure → optimize → accelerate** workflow, starting with a software implementation and progressively moving computation into dedicated hardware.
 
 ### ⚡ Software Optimizations
 
-- 🔄 **Rolling Rows** – reduced DP memory from full matrices to rolling buffers.
-- 🔁 **Pointer Swapping** – eliminated unnecessary row copying.
-- 🧬 **2-bit DNA Packing** – packed 16 DNA bases into a single 32-bit word, reducing memory footprint and communication overhead.
+- 🔄 **Rolling Rows** – reduced DP storage by keeping only the rows required for the current computation instead of full DP matrices.
+- 🔁 **Pointer Swapping** – reduced unnecessary copying in the optimized software implementation.
+- 🧬 **2-bit DNA Packing** – encoded each DNA base using 2 bits, allowing sequences of up to 16 bases to fit in a single 32-bit word.
+- 📦 **Pre-Packed References** – reference sequences are packed before performance measurement so the final benchmark focuses on accelerator execution and communication overhead.
 
-### 🖥️ Hardware Acceleration
+### 🖥️ FPGA Hardware Acceleration
 
-After profiling the algorithm, we identified the main computational bottleneck and moved the **Dynamic Programming row computation** into a custom FPGA accelerator connected to the RISC-V processor through a **Wishbone Bus**.
+The final architecture contains **two independent Smith-Waterman accelerator cores** connected to the RISC-V processor through a **Wishbone memory-mapped interface**.
 
-The accelerator:
+Each accelerator receives:
 
-- Initializes DP buffers
-- Computes complete DP rows in hardware
-- Updates the best alignment score internally
-- Returns the final score to the CPU
+- A packed query sequence
+- A packed reference sequence
+- Query and reference lengths
+- A command to start a full alignment
 
----
+A single `GO` command launches the complete Smith-Waterman alignment in hardware. The accelerator's internal finite-state machine performs initialization, DP-cell computation, row transitions, score tracking, and completion without requiring CPU intervention for each row.
 
-## 📈 Results
+The two accelerator cores occupy separate MMIO regions and can process **two independent reference sequences concurrently**.
 
-| Implementation | Clock Cycles |
-|---|---:|
-| Original Software | 1,157,276 |
-| Final Hardware-Accelerated Version | **4,390** |
-
-🎉 **263.6× Speedup**
-
-📉 **99.62% reduction in clock cycles**
-
-### 🔬 Hardware Validation
-
-The final implementation was deployed and tested on a **Nexys A7 FPGA**.
-
-The measured workload completed in **4,390 clock cycles** while producing the expected Smith-Waterman alignment scores.
-
-![Smith-Waterman Accelerator running on Nexys A7](images/nexys-a7-results.jpeg)
-
-*Final hardware-accelerated implementation running on the Nexys A7 FPGA, showing the measured 4,390-cycle workload and verification scores.*
-
----
-
-## 🛠️ Technologies
-
-- **RISC-V Processor**
-- **Nexys A7 FPGA**
-- **SystemVerilog**
-- **C**
-- **Xilinx Vivado**
-- **Wishbone Bus**
-- **PSP Performance Counters**
-
----
-
-## 📚 Project Highlights
-
-- Hardware/Software Co-Design
-- FPGA-Based Algorithm Acceleration
-- SystemVerilog RTL Development
-- RISC-V Integration
-- Dynamic Programming Acceleration
-- Performance Profiling and Benchmarking
-- Memory and Data Representation Optimization
-- Hardware Validation
-
----
-
-## 🏆 Performance Improvement
-
-The project demonstrates the impact of combining software optimization with dedicated hardware acceleration.
-
-Starting from an original software implementation requiring **1,157,276 clock cycles**, the final FPGA-accelerated implementation completed the same workload in only **4,390 clock cycles**.
-
-This corresponds to approximately:
-
-- **263.6× performance improvement**
-- **99.62% fewer clock cycles**
-
----
-
-*"Measure first. Optimize second. Accelerate last."* 🚀
+```text
+                         RISC-V CPU
+                             │
+                      Wishbone / MMIO
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+        Accelerator 0                 Accelerator 1
+              │                             │
+       Reference 2k                  Reference 2k+1
+              │                             │
+       Full Alignment                Full Alignment
+              │                             │
+              └──────── Scores ─────────────┘
