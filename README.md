@@ -39,11 +39,11 @@ The accelerator:
 | Implementation | Clock Cycles |
 |---------------|-------------:|
 | Original Software | 1,157,276 |
-| Final Hardware-Accelerated Version | **32,350** |
+| Final Hardware-Accelerated Version | **4,390** |
 
-🎉 **35.8× Speedup**
+🎉 **263.6× Speedup**
 
-📉 **97.2% reduction in execution time**
+📉 **99.62% reduction in clock cycles**
 
 ---
 
