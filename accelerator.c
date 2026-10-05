@@ -1,16 +1,23 @@
+/* -------------------------------------------------- */
+/* Software driver for two Smith-Waterman accelerators */
+/* -------------------------------------------------- */
+
 #include <psp_api.h>
 
-/* -------------------------------------------------- */
-/* Accelerator MMIO registers                         */
-/* -------------------------------------------------- */
+/* Each accelerator gets a separate 32-byte MMIO region. */
+#define ACC0_BASE 0x80001300
+#define ACC1_BASE 0x80001320
 
-#define ACCELERATOR_REG_CONTROL  0x80001300
-#define ACCELERATOR_REG_A        0x80001304
-#define ACCELERATOR_REG_B        0x80001308
-#define ACCELERATOR_REG_C        0x8000130C
-#define ACCELERATOR_REG_D        0x80001310
-#define ACCELERATOR_REG_RESULT   0x80001314
+#define ACCELERATOR_REG_CONTROL  0x00
+#define ACCELERATOR_REG_A        0x04
+#define ACCELERATOR_REG_B        0x08
+#define ACCELERATOR_REG_C        0x0C
+#define ACCELERATOR_REG_D        0x10
+#define ACCELERATOR_REG_RESULT   0x14
 
+#define REG(base, off) ((base) + (off))
+
+/* Direct memory-mapped register access macros. */
 #define READ_GPIO(dir) (*(volatile unsigned *)(dir))
 #define WRITE_GPIO(dir, value) (*(volatile unsigned *)(dir) = (value))
 
@@ -22,84 +29,101 @@
 #define PACK_LENS(q_len, r_len) \
     ((((r_len) & 0x1F) << 5) | ((q_len) & 0x1F))
 
-/* -------------------------------------------------- */
-/* Start accelerator and wait until DONE              */
-/* -------------------------------------------------- */
+/* REG_D[0] = 1 means compute one full Smith-Waterman alignment. */
+#define CMD_COMPUTE_FULL 1u
 
-static inline void accel_start_and_wait(void)
+/*
+ * Write one query/reference pair into a selected accelerator.
+ * This only configures the accelerator; it does not start it yet.
+ */
+static inline void hw_setup_alignment(
+    unsigned base,
+    unsigned packed_query,
+    unsigned packed_ref,
+    int query_len,
+    int ref_len)
 {
-    // Raise GO 
-    WRITE_GPIO(ACCELERATOR_REG_CONTROL, 1);
-
-    // Wait for DONE = CONTROL[31]
-    while ((READ_GPIO(ACCELERATOR_REG_CONTROL) & 0x80000000) == 0) {
-        // wait 
-    }
-
-    // Lower GO 
-    WRITE_GPIO(ACCELERATOR_REG_CONTROL, 0);
-} 
-
-/* -------------------------------------------------- */
-/* Initialize accelerator for one query/reference pair */
-/* -------------------------------------------------- */
-
-static void hw_row_init(
-        unsigned packed_query,
-        unsigned packed_ref,
-        int query_len,
-        int ref_len)
-{
-    WRITE_GPIO(ACCELERATOR_REG_A, packed_query);
-    WRITE_GPIO(ACCELERATOR_REG_B, packed_ref);
-    WRITE_GPIO(ACCELERATOR_REG_C, PACK_LENS(query_len, ref_len));
-
-    /*
-     * REG_D = 1 means INIT command.
-     * Accelerator stores inputs and initializes internal rolling rows.
-     */
-    WRITE_GPIO(ACCELERATOR_REG_D, 1);
-    accel_start_and_wait();
+  WRITE_GPIO(REG(base, ACCELERATOR_REG_A), packed_query);
+  WRITE_GPIO(REG(base, ACCELERATOR_REG_B), packed_ref);
+  WRITE_GPIO(REG(base, ACCELERATOR_REG_C), PACK_LENS(query_len, ref_len));
+  WRITE_GPIO(REG(base, ACCELERATOR_REG_D), CMD_COMPUTE_FULL);
 }
 
-/* -------------------------------------------------- */
-/* Compute one DP row                                 */
-/* -------------------------------------------------- */
-
-
-static int hw_compute_next_row(void)
+/* Start one accelerator by setting GO in its control register. */
+static inline void hw_start(unsigned base)
 {
-    //REG_D = 0 means COMPUTE_NEXT_ROW command.
-    
-    WRITE_GPIO(ACCELERATOR_REG_D, 0);
-
-    accel_start_and_wait();
+  WRITE_GPIO(REG(base, ACCELERATOR_REG_CONTROL), 1);
 }
 
-/* -------------------------------------------------- */
-/* Public function used by dna_match.c                */
-/* -------------------------------------------------- */
-
-int hw_compute_all_rows(
-        unsigned packed_query,
-        unsigned packed_ref,
-        int query_len,
-        int ref_len)
+/* Wait until one accelerator asserts DONE in CONTROL[31]. */
+static inline void hw_wait_done(unsigned base)
 {
-
-    hw_row_init(
-        packed_query,
-        packed_ref,
-        query_len,
-        ref_len
-    );
-
-    for (int row = 0; row < query_len; row++) {
-        hw_compute_next_row();
-    }
-    // hw_compute_next_row()return the best score in each iteration
-    // but we are interested in the final best score that is stores in the 
-    // result register
-    return (int)READ_GPIO(ACCELERATOR_REG_RESULT);
+  while ((READ_GPIO(REG(base, ACCELERATOR_REG_CONTROL)) & 0x80000000) == 0) {
+    /* busy wait */
+  }
 }
 
+/* Clear GO after DONE was observed, allowing the accelerator to return to IDLE. */
+static inline void hw_clear_go(unsigned base)
+{
+  WRITE_GPIO(REG(base, ACCELERATOR_REG_CONTROL), 0);
+}
+
+/* Read the final best alignment score from one accelerator. */
+static inline int hw_read_result(unsigned base)
+{
+  return (int)READ_GPIO(REG(base, ACCELERATOR_REG_RESULT));
+}
+
+/*
+ * Single-accelerator wrapper.
+ * Kept for compatibility and for testing one accelerator alone.
+ */
+int hw_compute_alignment(
+    unsigned packed_query,
+    unsigned packed_ref,
+    int query_len,
+    int ref_len)
+{
+  hw_setup_alignment(ACC0_BASE, packed_query, packed_ref, query_len, ref_len);
+
+  hw_start(ACC0_BASE);
+  hw_wait_done(ACC0_BASE);
+
+  int score = hw_read_result(ACC0_BASE);
+
+  hw_clear_go(ACC0_BASE);
+
+  return score;
+}
+
+/*
+ * Compute two independent Smith-Waterman alignments in parallel.
+ * Both accelerators receive the same query but different references.
+ */
+void hw_compute_two_alignments(
+    unsigned packed_query,
+    unsigned packed_ref0,
+    unsigned packed_ref1,
+    int query_len,
+    int ref_len0,
+    int ref_len1,
+    int *score0,
+    int *score1)
+{
+  hw_setup_alignment(ACC0_BASE, packed_query, packed_ref0, query_len, ref_len0);
+  hw_setup_alignment(ACC1_BASE, packed_query, packed_ref1, query_len, ref_len1);
+
+  /* Start both accelerators before waiting, so they run in parallel. */
+  hw_start(ACC0_BASE);
+  hw_start(ACC1_BASE);
+
+  hw_wait_done(ACC0_BASE);
+  hw_wait_done(ACC1_BASE);
+
+  *score0 = hw_read_result(ACC0_BASE);
+  *score1 = hw_read_result(ACC1_BASE);
+
+  hw_clear_go(ACC0_BASE);
+  hw_clear_go(ACC1_BASE);
+}
