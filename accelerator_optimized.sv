@@ -1,3 +1,14 @@
+/*
+ * Optimized Smith-Waterman Accelerator
+ *
+ * Improvements over accelerator.sv:
+ * - Reduced FSM from 6 states to 3 states (IDLE, CELL, FINISH)
+ * - Removed explicit INIT state using implicit boundary conditions
+ * - Removed ROW_START state using boundary handling in CELL
+ * - Removed COPY_ROW state using ping-pong row buffers
+ * - Eliminates unnecessary initialization and row-copy cycles
+ */
+
 module accelerator
 (
     input  logic        clk,
